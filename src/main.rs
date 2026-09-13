@@ -2,15 +2,15 @@ use clap::{Parser, Subcommand};
 use csv::{ReaderBuilder, Writer};
 use reqwest::Error;
 use serde::Deserialize;
-use serde_yaml::{Value, from_str};
+use serde_yaml::{from_str, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File, remove_file},
-    io::{self, Write, copy},
+    fs::{self, remove_file, File},
+    io::{self, copy, Write},
     path::{Path, PathBuf},
 };
 use tabld::{
-    model::{CLASS, Graph, IndexedMemoryGraph, ONTOLOGY, Subject},
+    model::{Graph, IndexedMemoryGraph, Subject, CLASS, ONTOLOGY},
     rdfxml,
 };
 
@@ -671,6 +671,10 @@ fn main() {
             if !Path::new(unparseable_cache_dir).exists() {
                 fs::create_dir("unparseable").expect("Failed to create unparseable file dir");
                 eprintln!("Created directory: unparseable/")
+            }
+            if !Path::new(results_dir).exists() {
+                fs::create_dir("results").expect("Failed to create results dir");
+                eprintln!("Created directory: results/")
             }
             let summary_path = format!("{}/download_summary.tsv", results_dir);
             download_obo_onts(
