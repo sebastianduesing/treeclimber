@@ -443,7 +443,7 @@ fn check_class_alignment(
 
 // Generate a table of classes and relevant alignment info
 fn generate_class_tsv(
-    reasoned_dir: &str,
+    cache_dir: &str,
     cob_path: &str,
     class_tsv_path: &str,
     analysis_tsv_path: &str,
@@ -509,7 +509,7 @@ fn generate_class_tsv(
         ])
         .unwrap();
 
-    let mut entries = fs::read_dir(reasoned_dir)
+    let mut entries = fs::read_dir(cache_dir)
         .expect("Could not read directory")
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()
@@ -681,20 +681,12 @@ fn report(analysis_tsv_path: &str, roots_tsv_path: &str) -> Result<(), Box<dyn s
 
 fn main() {
     let cache_dir = "cache".to_string();
-    let reasoned_dir = format!("{}/reasoned", cache_dir);
-    let unreasoned_dir = format!("{}/unreasoned", cache_dir);
     let unparseable_dir = "unparseable".to_string();
     let results_dir = "results".to_string();
     let class_tsv_path = format!("{}/obo_classes.tsv", results_dir);
     let analysis_tsv_path = format!("{}/alignment_analysis.tsv", results_dir);
     let roots_tsv_path = format!("{}/unaligned_roots.tsv", results_dir);
-    for dir in [
-        &cache_dir,
-        &reasoned_dir,
-        &unreasoned_dir,
-        &unparseable_dir,
-        &results_dir,
-    ] {
+    for dir in [&cache_dir, &unparseable_dir, &results_dir] {
         if !Path::new(&dir).exists() {
             fs::create_dir(&dir).expect(&format!("Failed to create {}", &dir));
             eprintln!("Created directory: {}", &dir);
@@ -705,7 +697,7 @@ fn main() {
         Commands::Download { lazy, test_length } => {
             let summary_path = format!("{}/download_summary.tsv", &results_dir);
             download_obo_onts(
-                &unreasoned_dir,
+                &cache_dir,
                 &unparseable_dir,
                 &summary_path,
                 lazy,
@@ -714,10 +706,10 @@ fn main() {
         }
         Commands::Analyze {} => {
             let cob_purl = String::from("http://purl.obolibrary.org/obo/cob.owl");
-            let cob_path = format!("{}/cob.owl", unreasoned_dir);
+            let cob_path = format!("{}/cob.owl", cache_dir);
             download(cob_purl, Path::new(&cob_path)).expect(&format!("Couldn't download cob.owl"));
             generate_class_tsv(
-                &reasoned_dir,
+                &cache_dir,
                 &cob_path,
                 &class_tsv_path,
                 &analysis_tsv_path,
