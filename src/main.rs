@@ -1,18 +1,21 @@
 use clap::{Parser, Subcommand};
 use csv::{ReaderBuilder, Writer};
+use regex::Regex;
 use reqwest::Error;
 use serde::Deserialize;
-use serde_yaml::{from_str, Value};
+use serde_yaml::{Value, from_str};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, remove_file, File},
-    io::{self, copy, Write},
+    ffi::OsStr,
+    fs::{self, File, remove_file},
+    io::{self, Write, copy},
     path::{Path, PathBuf},
 };
 use tabld::{
-    model::{Graph, IndexedMemoryGraph, Subject, CLASS, ONTOLOGY},
+    model::{CLASS, Graph, IndexedMemoryGraph, ONTOLOGY, Subject},
     rdfxml,
 };
+use url::Url;
 
 // CLI setup
 #[derive(Parser, Debug)]
@@ -52,6 +55,7 @@ struct Ontology {
 struct Root {
     _id: String,
     label: String,
+    anc_count: u64,
     desc_count: u64,
 }
 
@@ -69,6 +73,21 @@ fn download(url: String, destination: &Path) -> Result<(), Box<dyn std::error::E
     let content = response.bytes()?;
     copy(&mut content.as_ref(), &mut dest)?;
     Ok(())
+}
+
+// Convert a PURL to a CURIE
+fn purl_to_curie(purl: String) -> Result<String, Box<dyn std::error::Error>> {
+    let purl = Url::parse(&purl)?;
+    let re = Regex::new(r"(?<namespace>[a-zA-Z_]+)_(?<id>\d+)").unwrap();
+    let curie = purl
+        .path_segments()
+        .map(|c| c.collect::<Vec<_>>())
+        .unwrap()
+        .last()
+        .unwrap()
+        .to_string();
+    let curie = re.replace_all(&curie, "$namespace:$id").into_owned();
+    Ok(curie)
 }
 
 // Get IDs and PURLs of active OBO ontologies (minus COB and BFO)
@@ -117,8 +136,8 @@ fn get_ontology_purls(
 
 // Download ontologies
 fn download_obo_onts(
-    cache_dir: &str,
-    unparseable_cache_dir: &str,
+    destination: &str,
+    unparseable_dir: &str,
     summary_path: &str,
     lazy: &bool,
     test_length: &Option<u16>,
@@ -152,9 +171,9 @@ fn download_obo_onts(
         }
         let ont = ont_info.get(id).unwrap();
         let filename = format!("{id}.owl");
-        let path = format!("{cache_dir}/{filename}");
+        let path = format!("{destination}/{filename}");
         let path = Path::new(&path);
-        let rdfxml_error_path = format!("{unparseable_cache_dir}/{filename}");
+        let rdfxml_error_path = format!("{unparseable_dir}/{filename}");
         let rdfxml_error_path = Path::new(&rdfxml_error_path);
         if *lazy {
             if path.exists() || rdfxml_error_path.exists() {
@@ -318,14 +337,13 @@ fn check_class_alignment(
             let mut top_anc_label = "".to_string();
             if in_base == "True" {
                 let mut anc_vec: Vec<&String> = term_ancestors.into_iter().collect();
+                let anc_count = anc_vec.len() as u64 - 1;
                 anc_vec.sort_by_key(|s| graph.ancestors(s).len());
                 anc_vec.reverse();
                 if anc_vec.len() > 0 {
                     for ancestor in anc_vec.iter() {
                         if ancestor.to_lowercase().contains(&iri_flag) {
                             top_ns_ancestor = ancestor.to_string();
-                        } else {
-                            break;
                         }
                     }
                 }
@@ -349,6 +367,7 @@ fn check_class_alignment(
                     let root = Root {
                         _id: root_name.to_string(),
                         label: top_anc_label.to_string(),
+                        anc_count: anc_count,
                         desc_count: desc_count,
                     };
                     ontology.unaligned_roots.insert(root_name.to_string(), root);
@@ -395,6 +414,12 @@ fn check_class_alignment(
                     .unaligned_roots
                     .get(root)
                     .unwrap()
+                    .anc_count
+                    .to_string(),
+                ontology
+                    .unaligned_roots
+                    .get(root)
+                    .unwrap()
                     .desc_count
                     .to_string(),
             ])
@@ -418,6 +443,7 @@ fn check_class_alignment(
 
 // Generate a table of classes and relevant alignment info
 fn generate_class_tsv(
+    reasoned_dir: &str,
     cob_path: &str,
     class_tsv_path: &str,
     analysis_tsv_path: &str,
@@ -478,11 +504,12 @@ fn generate_class_tsv(
             "Root IRI",
             "Root Label",
             "Is Preferred Root?",
-            "Descendent Class Count",
+            "Ancestors",
+            "Descendents",
         ])
         .unwrap();
 
-    let mut entries = fs::read_dir("cache/")
+    let mut entries = fs::read_dir(reasoned_dir)
         .expect("Could not read directory")
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()
@@ -490,7 +517,7 @@ fn generate_class_tsv(
     entries.sort();
 
     for e in entries {
-        if e.as_os_str() == cob_path {
+        if e.file_name().unwrap() == OsStr::new("cob.owl") {
             continue;
         }
         check_class_alignment(
@@ -542,12 +569,7 @@ struct RootRecord {
     #[serde(rename = "Descendent Class Count")]
     desc_count: u64,
 }
-
-fn report(
-    // class_tsv_path: &str,
-    analysis_tsv_path: &str,
-    roots_tsv_path: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn report(analysis_tsv_path: &str, roots_tsv_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let reports_dir = "reports/";
     if !Path::new(reports_dir).exists() {
         fs::create_dir("reports").expect("Failed to create reports dir");
@@ -633,7 +655,7 @@ fn report(
             };
             write!(
                 f,
-                "| IRI of Root | Label of Root | Preferred Root? | Number of Subclasses |\n"
+                "| Root ID | Root Label | Preferred Root? | Subclasses |\n"
             )?;
             write!(f, "| ----- | ----- | ----- | ----- |\n")?;
             let mut count = 0;
@@ -645,7 +667,10 @@ fn report(
                 write!(
                     f,
                     "| {} | {} | {} | {} |\n",
-                    root.iri, root.label, root.preferred, root.desc_count
+                    purl_to_curie(root.iri.clone()).unwrap_or(root.iri.clone()),
+                    root.label,
+                    root.preferred,
+                    root.desc_count,
                 )?
             }
         }
@@ -655,51 +680,44 @@ fn report(
 }
 
 fn main() {
-    let cache_dir = "cache";
-    let unparseable_cache_dir = "unparseable";
-    let results_dir = "results";
+    let cache_dir = "cache".to_string();
+    let reasoned_dir = format!("{}/reasoned", cache_dir);
+    let unreasoned_dir = format!("{}/unreasoned", cache_dir);
+    let unparseable_dir = "unparseable".to_string();
+    let results_dir = "results".to_string();
     let class_tsv_path = format!("{}/obo_classes.tsv", results_dir);
     let analysis_tsv_path = format!("{}/alignment_analysis.tsv", results_dir);
     let roots_tsv_path = format!("{}/unaligned_roots.tsv", results_dir);
+    for dir in [
+        &cache_dir,
+        &reasoned_dir,
+        &unreasoned_dir,
+        &unparseable_dir,
+        &results_dir,
+    ] {
+        if !Path::new(&dir).exists() {
+            fs::create_dir(&dir).expect(&format!("Failed to create {}", &dir));
+            eprintln!("Created directory: {}", &dir);
+        }
+    }
     let cli = Cli::parse();
     match &cli.command {
         Commands::Download { lazy, test_length } => {
-            if !Path::new(cache_dir).exists() {
-                fs::create_dir("cache").expect("Failed to create cache");
-                eprintln!("Created directory: cache/")
-            }
-            if !Path::new(unparseable_cache_dir).exists() {
-                fs::create_dir("unparseable").expect("Failed to create unparseable file dir");
-                eprintln!("Created directory: unparseable/")
-            }
-            if !Path::new(results_dir).exists() {
-                fs::create_dir("results").expect("Failed to create results dir");
-                eprintln!("Created directory: results/")
-            }
-            let summary_path = format!("{}/download_summary.tsv", results_dir);
+            let summary_path = format!("{}/download_summary.tsv", &results_dir);
             download_obo_onts(
-                &cache_dir,
-                &unparseable_cache_dir,
+                &unreasoned_dir,
+                &unparseable_dir,
                 &summary_path,
                 lazy,
                 test_length,
             );
         }
         Commands::Analyze {} => {
-            if !Path::new(cache_dir).exists() {
-                panic!("No cache found. Run 'cargo run -- download' to cache files")
-            }
-            if !Path::new(unparseable_cache_dir).exists() {
-                fs::create_dir("unparseable").expect("Failed to create unparseable file dir");
-            }
-            if !Path::new(results_dir).exists() {
-                fs::create_dir("results").expect("Failed to create results dir");
-                eprintln!("Created directory: results/")
-            }
             let cob_purl = String::from("http://purl.obolibrary.org/obo/cob.owl");
-            let cob_path = format!("{}/cob.owl", cache_dir);
+            let cob_path = format!("{}/cob.owl", unreasoned_dir);
             download(cob_purl, Path::new(&cob_path)).expect(&format!("Couldn't download cob.owl"));
             generate_class_tsv(
+                &reasoned_dir,
                 &cob_path,
                 &class_tsv_path,
                 &analysis_tsv_path,
@@ -707,13 +725,6 @@ fn main() {
             );
         }
         Commands::Report {} => {
-            if !Path::new(results_dir).exists() {
-                panic!(
-                    "No analysis files found. \
-                    Run 'cargo run -- download' to cache files and \
-                    run 'cargo run -- analyze' to create analysis tables"
-                )
-            }
             if !Path::new(&class_tsv_path).exists()
                 || !Path::new(&analysis_tsv_path).exists()
                 || !Path::new(&roots_tsv_path).exists()
