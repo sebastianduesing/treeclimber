@@ -19,7 +19,7 @@ use url::Url;
 
 // CLI setup
 #[derive(Parser, Debug)]
-#[command(name = "cob_align", version, about, long_about = None)]
+#[command(name = "treeclimber", version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -37,8 +37,16 @@ enum Commands {
         #[arg(short = 't', long = "test-length")]
         test_length: Option<u16>,
     },
-    // Checks downloaded ontologies for COB alignment
-    Analyze {},
+    // Checks downloaded ontologies for alignment with upper level ontology
+    Analyze {
+        // Set upper level ontology via path
+        #[arg(short = 'p', long = "ulo-path", value_name = "path")]
+        ulo_path: Option<String>,
+
+        // Set upper level ontology via IRI
+        #[arg(short = 'i', long = "ulo-iri", value_name = "iri")]
+        ulo_iri: Option<String>,
+    },
     // Creates per-ontology alignment reports
     Report {},
 }
@@ -90,7 +98,7 @@ fn purl_to_curie(purl: String) -> Result<String, Box<dyn std::error::Error>> {
     Ok(curie)
 }
 
-// Get IDs and PURLs of active OBO ontologies (minus COB and BFO)
+// Get IDs and PURLs of active OBO ontologies in an OBO-Registry-style YAML file
 fn get_ontology_purls(
     yaml: String,
 ) -> Result<BTreeMap<String, BTreeMap<String, String>>, Box<dyn std::error::Error>> {
@@ -120,9 +128,6 @@ fn get_ontology_purls(
                     },
                     None => continue,
                 };
-                if o_id == String::from("cob") || o_id == String::from("bfo") {
-                    continue;
-                }
                 let mut ont_map: BTreeMap<String, String> = BTreeMap::new();
                 ont_map.insert("id".to_string(), o_id.clone());
                 ont_map.insert("purl".to_string(), o_purl);
@@ -241,7 +246,7 @@ fn check_class_alignment(
     class_wtr: &mut Writer<File>,
     analysis_wtr: &mut Writer<File>,
     roots_wtr: &mut Writer<File>,
-    cob_subjects: &Vec<&Subject>,
+    ulo_subjects: &Vec<&Subject>,
 ) -> Result<(), String> {
     let ont = ont_path.file_prefix().unwrap().display();
     let ont_string = format!("{ont}");
@@ -309,8 +314,8 @@ fn check_class_alignment(
         let name = subject.name();
         term_ancestors.insert(&name);
         let mut found: bool = false;
-        for cob_subject in cob_subjects.iter() {
-            if term_ancestors.contains(&cob_subject.name()) {
+        for ulo_subject in ulo_subjects.iter() {
+            if term_ancestors.contains(&ulo_subject.name()) {
                 ontology.aligned_class_count = ontology.aligned_class_count + 1;
                 if in_base == "True" {
                     ontology.aligned_ns_class_count = ontology.aligned_ns_class_count + 1;
@@ -319,8 +324,8 @@ fn check_class_alignment(
                     .write_record([
                         &subject.name(),
                         &subject.label().replace("\n", "").replace("\t", ""),
-                        &cob_subject.name(),
-                        &cob_subject.label(),
+                        &ulo_subject.name(),
+                        &ulo_subject.label(),
                         &ont_string,
                         in_base,
                         "",
@@ -444,17 +449,18 @@ fn check_class_alignment(
 // Generate a table of classes and relevant alignment info
 fn generate_class_tsv(
     cache_dir: &str,
-    cob_path: &str,
+    ulo_path: &str,
+    ulo_filename: &str,
     class_tsv_path: &str,
     analysis_tsv_path: &str,
     roots_tsv_path: &str,
 ) {
-    let rdfxml_input = std::fs::read_to_string(cob_path).expect("Read from file");
+    let rdfxml_input = std::fs::read_to_string(ulo_path).expect("Read from file");
     let graph = rdfxml::read(&rdfxml_input).expect("Read from string");
-    let cob_graph: IndexedMemoryGraph = graph.into();
-    let mut cob_subjects: Vec<&Subject> = cob_graph.subjects().into_iter().collect();
-    cob_subjects.sort_by_key(|s| cob_graph.ancestors(&s.name()).len());
-    cob_subjects.reverse();
+    let ulo_graph: IndexedMemoryGraph = graph.into();
+    let mut ulo_subjects: Vec<&Subject> = ulo_graph.subjects().into_iter().collect();
+    ulo_subjects.sort_by_key(|s| ulo_graph.ancestors(&s.name()).len());
+    ulo_subjects.reverse();
 
     let mut class_wtr = csv::WriterBuilder::new()
         .delimiter(b'\t')
@@ -465,8 +471,8 @@ fn generate_class_tsv(
         .write_record([
             "Class IRI",
             "Class Label",
-            "Lowest COB Ancestor IRI",
-            "Lowest COB Ancestor Label",
+            "Lowest ULO Ancestor IRI",
+            "Lowest ULO Ancestor Label",
             "Found In",
             "In Namespace?",
             "Highest In-Namespace Ancestor IRI",
@@ -517,7 +523,7 @@ fn generate_class_tsv(
     entries.sort();
 
     for e in entries {
-        if e.file_name().unwrap() == OsStr::new("cob.owl") {
+        if e.file_name().unwrap() == OsStr::new(ulo_filename) {
             continue;
         }
         check_class_alignment(
@@ -525,7 +531,7 @@ fn generate_class_tsv(
             &mut class_wtr,
             &mut analysis_wtr,
             &mut roots_wtr,
-            &cob_subjects,
+            &ulo_subjects,
         )
         .expect("couldn't print terms");
     }
@@ -601,10 +607,10 @@ fn report(analysis_tsv_path: &str, roots_tsv_path: &str) -> Result<(), Box<dyn s
         let mut f = File::create(report_path)?;
         let name = &record.ont_name.to_uppercase();
 
-        write!(f, "# COB Alignment Report for {}\n\n", name)?;
+        write!(f, "# Alignment Report for {}\n\n", name)?;
         write!(
             f,
-            "In the table below, \"aligned classes\" are classes that have at least one ancestor that is a term in COB.\n\n"
+            "In the table below, \"aligned classes\" are classes that have at least one ancestor that is a term in the selected upper-level ontology (ULO).\n\n"
         )?;
         write!(
             f,
@@ -629,15 +635,15 @@ fn report(analysis_tsv_path: &str, roots_tsv_path: &str) -> Result<(), Box<dyn s
         )?;
         let root_num = roots.iter().len();
         let instructions = if root_num == 0 {
-            format!("{name} is fully aligned with COB.")
+            format!("{name} is fully aligned with the ULO.")
         } else {
             format!(
-                "To align {name} with COB, these terms should be moved under COB terms or added to COB."
+                "To align {name} with the ULO, these terms should be moved under terms in that ontology or added to it."
             )
         };
         write!(
             f,
-            "{name} has {} unaligned roots. An unaligned root is the highest-level in-namespace term without a COB ancestor. {instructions}\n\n",
+            "{name} has {} unaligned roots. An unaligned root is the highest-level in-namespace term without an ancestor in the ULO. {instructions}\n\n",
             roots.iter().len(),
         )?;
         let pref_root_desc = "The column 'Preferred Root?' indicates whether a term has an `IAO:0000700` annotation marking it as a preferred root in the ontology.";
@@ -683,7 +689,7 @@ fn main() {
     let cache_dir = "cache".to_string();
     let unparseable_dir = "unparseable".to_string();
     let results_dir = "results".to_string();
-    let class_tsv_path = format!("{}/obo_classes.tsv", results_dir);
+    let class_tsv_path = format!("{}/all_classes.tsv", results_dir);
     let analysis_tsv_path = format!("{}/alignment_analysis.tsv", results_dir);
     let roots_tsv_path = format!("{}/unaligned_roots.tsv", results_dir);
     for dir in [&cache_dir, &unparseable_dir, &results_dir] {
@@ -704,13 +710,40 @@ fn main() {
                 test_length,
             );
         }
-        Commands::Analyze {} => {
-            let cob_purl = String::from("http://purl.obolibrary.org/obo/cob.owl");
-            let cob_path = format!("{}/cob.owl", cache_dir);
-            download(cob_purl, Path::new(&cob_path)).expect(&format!("Couldn't download cob.owl"));
+        Commands::Analyze { ulo_path, ulo_iri } => {
+            let (ulo, ulo_filename) = match ulo_path {
+                Some(path) => {
+                    let ulo = String::from(path);
+                    let ulo_filename = Path::new(&ulo)
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .to_string();
+                    (ulo, ulo_filename)
+                }
+                None => match ulo_iri {
+                    Some(iri) => {
+                        let ulo_filename = Url::parse(&iri).unwrap();
+                        let ulo_filename = ulo_filename
+                            .path_segments()
+                            .map(|c| c.collect::<Vec<_>>())
+                            .unwrap()
+                            .last()
+                            .unwrap()
+                            .to_string();
+                        let ulo = format!("{}/{}", cache_dir, ulo_filename);
+                        download(String::from(iri), Path::new(&ulo))
+                            .expect(&format!("Couldn't download {}", ulo_filename));
+                        (ulo, ulo_filename)
+                    }
+                    None => panic!("MISSING ULO ERROR: No upper level ontology specified"),
+                },
+            };
+            println!("Analyzing ontology alignment with {ulo_filename}");
             generate_class_tsv(
                 &cache_dir,
-                &cob_path,
+                &ulo,
+                &ulo_filename,
                 &class_tsv_path,
                 &analysis_tsv_path,
                 &roots_tsv_path,
