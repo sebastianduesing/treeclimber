@@ -37,6 +37,8 @@ cargo run --release -- analyze -i http://purl.obolibrary.org/obo/bfo.owl
   
 ```
 
+By default the analysis will only include in-namespace roots in the detailed unaligned analysis. However, the argument `--all-unaligned` (`-a`) will force the script to include all unaligned roots (incl. out-of-namespace roots) and show them in the `unaligned_roots` results file. 
+
 #### RDFXML Parsing Errors
 
 While running the analysis portion of the script, Treeclimber may abort with an RDFXML parsing error. When this occurs, move the file mentioned in the last `Analyzing classes in <ont>` printout from the `cache/` directory into the `unparseable/` directory, and then rerun the script.

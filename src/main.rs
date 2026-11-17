@@ -46,6 +46,10 @@ enum Commands {
         // Set upper level ontology via IRI
         #[arg(short = 'i', long = "ulo-iri", value_name = "iri")]
         ulo_iri: Option<String>,
+
+        // Include All Unaligned Roots (incl. those Out of Namespace)
+        #[arg(short = 'a', long = "all-unaligned")]
+        incl_all_unaligned: bool,
     },
     // Creates per-ontology alignment reports
     Report {},
@@ -55,8 +59,10 @@ struct Ontology {
     id: String,
     class_count: u64,
     ns_class_count: u64,
+    ext_ns_class_count: u64,
     aligned_class_count: u64,
     aligned_ns_class_count: u64,
+    aligned_ext_ns_class_count: u64,
     unaligned_roots: BTreeMap<String, Root>,
 }
 
@@ -65,6 +71,7 @@ struct Root {
     label: String,
     anc_count: u64,
     desc_count: u64,
+    in_base: bool,
 }
 
 // Access a resource by url and read its contents to a string
@@ -247,6 +254,7 @@ fn check_class_alignment(
     analysis_wtr: &mut Writer<File>,
     roots_wtr: &mut Writer<File>,
     ulo_subjects: &Vec<&Subject>,
+    incl_all_unaligned: bool,
 ) -> Result<(), String> {
     let ont = ont_path.file_prefix().unwrap().display();
     let ont_string = format!("{ont}");
@@ -263,8 +271,10 @@ fn check_class_alignment(
         id: ont_string.clone(),
         class_count: 0,
         ns_class_count: 0,
+        ext_ns_class_count: 0,
         aligned_class_count: 0,
         aligned_ns_class_count: 0,
+        aligned_ext_ns_class_count: 0,
         unaligned_roots: BTreeMap::new(),
     };
     let mut preferred_roots: BTreeSet<String> = BTreeSet::new();
@@ -309,6 +319,8 @@ fn check_class_alignment(
         if subject.name().to_lowercase().contains(&iri_flag) {
             in_base = "True";
             ontology.ns_class_count = ontology.ns_class_count + 1;
+        } else {
+            ontology.ext_ns_class_count = ontology.ext_ns_class_count + 1;
         }
         let mut term_ancestors = graph.ancestors(&subject.name());
         let name = subject.name();
@@ -319,6 +331,8 @@ fn check_class_alignment(
                 ontology.aligned_class_count = ontology.aligned_class_count + 1;
                 if in_base == "True" {
                     ontology.aligned_ns_class_count = ontology.aligned_ns_class_count + 1;
+                } else {
+                    ontology.aligned_ext_ns_class_count = ontology.aligned_ext_ns_class_count + 1;
                 }
                 class_wtr
                     .write_record([
@@ -340,7 +354,11 @@ fn check_class_alignment(
             let mut top_ns_ancestor = "".to_string();
             let mut root_name = "".to_string();
             let mut top_anc_label = "".to_string();
-            if in_base == "True" {
+
+            // Default is to only include in-namespace roots in unaligned reporting,
+            // however, by passing the arg -a the use can force out-of-namespace unaligned
+            // roots into the reporting.
+            if in_base == "True" || incl_all_unaligned {
                 let mut anc_vec: Vec<&String> = term_ancestors.into_iter().collect();
                 let anc_count = anc_vec.len() as u64 - 1;
                 anc_vec.sort_by_key(|s| graph.ancestors(s).len());
@@ -374,6 +392,7 @@ fn check_class_alignment(
                         label: top_anc_label.to_string(),
                         anc_count: anc_count,
                         desc_count: desc_count,
+                        in_base: in_base.to_lowercase().parse::<bool>().unwrap_or(false),
                     };
                     ontology.unaligned_roots.insert(root_name.to_string(), root);
                 }
@@ -427,6 +446,12 @@ fn check_class_alignment(
                     .unwrap()
                     .desc_count
                     .to_string(),
+                ontology
+                    .unaligned_roots
+                    .get(root)
+                    .unwrap()
+                    .in_base
+                    .to_string(),
             ])
             .unwrap();
     }
@@ -435,12 +460,30 @@ fn check_class_alignment(
             ontology.id,
             ontology.class_count.to_string(),
             ontology.ns_class_count.to_string(),
+            ontology.ext_ns_class_count.to_string(),
             ns_ratio,
             ontology.aligned_class_count.to_string(),
             aligned_ratio,
             ontology.aligned_ns_class_count.to_string(),
+            ontology.aligned_ext_ns_class_count.to_string(),
             aligned_ns_ratio,
             ontology.unaligned_roots.keys().len().to_string(),
+            ontology
+                .unaligned_roots
+                .values()
+                .filter(|x| x.in_base)
+                .count()
+                .to_string(),
+            if incl_all_unaligned {
+                ontology
+                    .unaligned_roots
+                    .values()
+                    .filter(|x| !x.in_base)
+                    .count()
+                    .to_string()
+            } else {
+                "N/A".to_string()
+            },
         ])
         .unwrap();
     Ok(())
@@ -451,6 +494,7 @@ fn generate_class_tsv(
     cache_dir: &str,
     ulo_path: &str,
     ulo_filename: &str,
+    incl_all_unaligned: bool,
     class_tsv_path: &str,
     analysis_tsv_path: &str,
     roots_tsv_path: &str,
@@ -490,12 +534,16 @@ fn generate_class_tsv(
             "Ontology",
             "Total Classes",
             "Classes in Namespace",
+            "Classes Out of Namespace",
             "Ratio of In- to Out-of-Namespace Classes",
             "Total Aligned Classes",
             "Ratio of Aligned Classes to All Classes",
             "Aligned in-Namespace Classes",
+            "Aligned Out-of-Namespace Classes",
             "Ratio of Aligned in-Namespace Classes to All in-Namespace Classes",
-            "Unaligned Roots",
+            "All Unaligned Roots",
+            "In-Namespace Unaligned Roots",
+            "Out-of-Namespace Unaligned Roots",
         ])
         .unwrap();
 
@@ -512,6 +560,7 @@ fn generate_class_tsv(
             "Is Preferred Root?",
             "Ancestors",
             "Descendents",
+            "In Namespace?",
         ])
         .unwrap();
 
@@ -532,6 +581,7 @@ fn generate_class_tsv(
             &mut analysis_wtr,
             &mut roots_wtr,
             &ulo_subjects,
+            incl_all_unaligned,
         )
         .expect("couldn't print terms");
     }
@@ -710,7 +760,11 @@ fn main() {
                 test_length,
             );
         }
-        Commands::Analyze { ulo_path, ulo_iri } => {
+        Commands::Analyze {
+            ulo_path,
+            ulo_iri,
+            incl_all_unaligned,
+        } => {
             let (ulo, ulo_filename) = match ulo_path {
                 Some(path) => {
                     let ulo = String::from(path);
@@ -744,6 +798,7 @@ fn main() {
                 &cache_dir,
                 &ulo,
                 &ulo_filename,
+                *incl_all_unaligned,
                 &class_tsv_path,
                 &analysis_tsv_path,
                 &roots_tsv_path,
