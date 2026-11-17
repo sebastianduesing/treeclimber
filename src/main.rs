@@ -72,7 +72,6 @@ struct Root {
     anc_count: u64,
     desc_count: u64,
     in_base: bool,
-
 }
 
 // Access a resource by url and read its contents to a string
@@ -355,7 +354,7 @@ fn check_class_alignment(
             let mut top_ns_ancestor = "".to_string();
             let mut root_name = "".to_string();
             let mut top_anc_label = "".to_string();
-            
+
             // Default is to only include in-namespace roots in unaligned reporting,
             // however, by passing the arg -a the use can force out-of-namespace unaligned
             // roots into the reporting.
@@ -469,13 +468,22 @@ fn check_class_alignment(
             ontology.aligned_ext_ns_class_count.to_string(),
             aligned_ns_ratio,
             ontology.unaligned_roots.keys().len().to_string(),
-            ontology.unaligned_roots.values().filter(|x| x.in_base).count().to_string(),
+            ontology
+                .unaligned_roots
+                .values()
+                .filter(|x| x.in_base)
+                .count()
+                .to_string(),
             if incl_all_unaligned {
-                ontology.unaligned_roots.values().filter(|x| !x.in_base).count().to_string()
+                ontology
+                    .unaligned_roots
+                    .values()
+                    .filter(|x| !x.in_base)
+                    .count()
+                    .to_string()
             } else {
                 "N/A".to_string()
             },
-
         ])
         .unwrap();
     Ok(())
@@ -525,17 +533,17 @@ fn generate_class_tsv(
         .write_record([
             "Ontology",
             "Total Classes",
-            "Classes In Namespace",
+            "Classes in Namespace",
             "Classes Out of Namespace",
-            "Ratio of In to Out of Namespace Classes",
+            "Ratio of In- to Out-of-Namespace Classes",
             "Total Aligned Classes",
             "Ratio of Aligned Classes to All Classes",
-            "Aligned in Namespace Classes",
-            "Aligned Out of Namespace Classes",
-            "Ratio of Aligned in Namespace Classes to All in Namespace Classes",
+            "Aligned in-Namespace Classes",
+            "Aligned Out-of-Namespace Classes",
+            "Ratio of Aligned in-Namespace Classes to All in-Namespace Classes",
             "All Unaligned Roots",
-            "In Namesapce Unaligned Roots",
-            "Out of Namespace Unaligned Roots",
+            "In-Namespace Unaligned Roots",
+            "Out-of-Namespace Unaligned Roots",
         ])
         .unwrap();
 
@@ -552,7 +560,7 @@ fn generate_class_tsv(
             "Is Preferred Root?",
             "Ancestors",
             "Descendents",
-            "In Namespace?"
+            "In Namespace?",
         ])
         .unwrap();
 
@@ -573,7 +581,7 @@ fn generate_class_tsv(
             &mut analysis_wtr,
             &mut roots_wtr,
             &ulo_subjects,
-            incl_all_unaligned
+            incl_all_unaligned,
         )
         .expect("couldn't print terms");
     }
@@ -752,7 +760,11 @@ fn main() {
                 test_length,
             );
         }
-        Commands::Analyze { ulo_path, ulo_iri, incl_all_unaligned } => {
+        Commands::Analyze {
+            ulo_path,
+            ulo_iri,
+            incl_all_unaligned,
+        } => {
             let (ulo, ulo_filename) = match ulo_path {
                 Some(path) => {
                     let ulo = String::from(path);
